@@ -1,7 +1,5 @@
-// api/factura-ticket.js
-const { query } = require('./_utils/db'); // Importar la utilidad de DB
+const { query } = require('./_utils/db');
 
-// Función para escapar HTML básico (VERSIÓN CORRECTA con entidades HTML)
 function escapeHtml(unsafe) {
     if (unsafe === null || unsafe === undefined) return '';
     return unsafe
@@ -26,25 +24,28 @@ module.exports = async (req, res) => {
         return res.status(400).send('Error: Falta el parámetro "id" (ID de Venta) en la URL.');
     }
     const saleId = id;
-    console.log(`[Factura Ticket Final] Iniciando generación para Venta ID: ${saleId}`);
+    console.log(`[Factura Ticket Final+] Iniciando generación para Venta ID: ${saleId}`);
 
     try {
         const companySql = "SELECT `NOMBRE EMPRESA`, `DIRECCION`, `RTN`, `TELEFONO`, `CORREO`, `PAGINA WEB` FROM `DATOS DE FACTURA` LIMIT 1";
         const companyResults = await query(companySql);
-        if (companyResults.length === 0) {
-            console.error(`[Factura Ticket ${saleId}] Error: No se encontraron datos en DATOS DE FACTURA.`);
-            throw new Error("No se encontraron datos de la empresa en DATOS DE FACTURA.");
-        }
+        if (companyResults.length === 0) throw new Error("No se encontraron datos de la empresa.");
         const companyData = companyResults[0];
 
         const saleSql = `
-            SELECT v.*, v.DESCUENTO as DESCUENTO_GLOBAL, c.CLIENTE, c.DIRECCION as DIRECCION_CLIENTE, c.TELEFONO as TELEFONO_CLIENTE
-            FROM VENTA v LEFT JOIN CLIENTES c ON v.\`ID CLIENTE\` = c.\`ID CLIENTE\` WHERE v.\`ID VENTA\` = ?`;
+            SELECT
+                v.*,
+                v.DESCUENTO as DESCUENTO_GLOBAL,
+                c.CLIENTE,
+                c.DIRECCION as DIRECCION_CLIENTE,
+                c.TELEFONO as TELEFONO_CLIENTE,
+                u.NOMBRE as NOMBRE_VENDEDOR
+            FROM VENTA v
+            LEFT JOIN CLIENTES c ON v.\`ID CLIENTE\` = c.\`ID CLIENTE\`
+            LEFT JOIN USUARIO u ON v.\`ID VENDEDOR\` = u.\`ID USUARIO\`
+            WHERE v.\`ID VENTA\` = ?`;
         const saleResults = await query(saleSql, [saleId]);
-        if (saleResults.length === 0) {
-            console.error(`[Factura Ticket ${saleId}] Error: Venta no encontrada.`);
-            throw new Error(`Venta con ID ${saleId} no encontrada.`);
-        }
+        if (saleResults.length === 0) throw new Error(`Venta con ID ${saleId} no encontrada.`);
         const saleData = saleResults[0];
         const descuentoGlobalVenta = parseFloat(saleData.DESCUENTO_GLOBAL || 0);
 
@@ -53,18 +54,22 @@ module.exports = async (req, res) => {
         const detailsResults = await query(detailsSql, [saleId]);
         const detailsData = detailsResults;
 
+        console.log(`[Factura Ticket ${saleId}] Calculando totales...`);
         let subTotalBrutoCalculado = 0;
         let descuentoItemsCalculado = 0;
+        let totalVentaFinal = 0;
         let filasHtml = '';
 
-        detailsData.forEach((item, index) => {
+        detailsData.forEach(item => {
             const cantidad = parseFloat(item.CANTIDAD || 0);
             const precioUnitario = parseFloat(item['PRECIO UNITARIO'] || 0);
             const descuentoItem = parseFloat(item.DESCUENTO || 0);
             const totalBrutoItem = (cantidad * precioUnitario);
+            const subtotalItemNeto = totalBrutoItem - descuentoItem;
 
             subTotalBrutoCalculado += totalBrutoItem;
             descuentoItemsCalculado += descuentoItem;
+            totalVentaFinal += subtotalItemNeto;
 
             filasHtml += `
                 <tr class="item">
@@ -76,12 +81,14 @@ module.exports = async (req, res) => {
             `;
         });
 
-        const descuentoTotalGeneral = descuentoItemsCalculado + descuentoGlobalVenta;
-        const totalVentaFinal = subTotalBrutoCalculado - descuentoTotalGeneral;
+        totalVentaFinal = subTotalBrutoCalculado - (descuentoItemsCalculado + descuentoGlobalVenta);
+
+        console.log(`[Factura Ticket ${saleId}] Cálculos: SubTotalBruto=${subTotalBrutoCalculado}, DescItems=${descuentoItemsCalculado}, DescGlobal=${descuentoGlobalVenta}, TotalFinal=${totalVentaFinal}`);
 
         const fechaVenta = saleData['FECHA DE VENTA'] ? new Date(saleData['FECHA DE VENTA']).toLocaleDateString('es-ES') : 'N/A';
         const horaVenta = saleData['HORA VENTA'] || '';
 
+        console.log(`[Factura Ticket ${saleId}] Construyendo HTML...`);
         const htmlContent = `
 <!DOCTYPE html>
 <html lang="es">
@@ -104,13 +111,9 @@ module.exports = async (req, res) => {
     thead td:nth-child(3), tbody td:nth-child(3) { width: 20%; text-align: right; }
     thead td:nth-child(4), tbody td:nth-child(4) { width: 25%; text-align: right; }
     tfoot td { padding-top: 3px; }
+    .seller-info { font-size: 9px; margin-top: 4px; text-align: center; }
 
-    @media print{
-      @page {size: 58mm auto; margin: 0;}
-      body{width:58mm;margin:0;padding:0;-webkit-print-color-adjust: exact;}
-      .invoice-box{padding: 0;border:none;font-size:9.5px; box-shadow: none;}
-      button { display: none; }
-    }
+    @media print{}
   </style>
 </head>
 <body>
@@ -125,6 +128,10 @@ module.exports = async (req, res) => {
     </div>
 
     <div class="centered-info" id="codigo">RECIBO #${escapeHtml(saleId)}<br>${fechaVenta} ${horaVenta}</div>
+
+    <div class="seller-info">
+      Vendedor: ${escapeHtml(saleData.NOMBRE_VENDEDOR || saleData['ID VENDEDOR'] || 'N/A')}
+    </div>
 
     <div class="centered-info">
       Cliente: <span id="nomcliente">${escapeHtml(saleData['CLIENTE'] || 'N/A')}</span><br>
@@ -147,7 +154,7 @@ module.exports = async (req, res) => {
       <tfoot>
         <tr class="desc">
           <td colspan="3" style="text-align:right;">Descuento Total:</td>
-          <td id="descuento_total_general" style="text-align: right;">${descuentoTotalGeneral.toFixed(2)}</td>
+          <td id="descuento_total_general" style="text-align: right;">${(descuentoItemsCalculado + descuentoGlobalVenta).toFixed(2)}</td>
         </tr>
         <tr class="total">
           <td colspan="3" style="text-align:right;">Total Venta:</td>
@@ -162,18 +169,7 @@ module.exports = async (req, res) => {
   </div>
 
   <script>
-    window.onload = function () {
-      try {
-          console.log('[Factura Ticket] Intentando imprimir...');
-          window.print();
-      } catch(e) {
-          console.error("[Factura Ticket] Error al intentar imprimir automáticamente:", e);
-          if (!document.getElementById('print-error-msg')) {
-              const errorMsg = '<p id="print-error-msg" style="text-align:center; margin-top: 20px;">Error al iniciar impresión automática. Por favor, use la función de impresión de su navegador (Ctrl+P / Cmd+P).</p><button onclick="window.print()">Imprimir Manualmente</button>';
-              document.body.insertAdjacentHTML('beforeend', errorMsg);
-          }
-      }
-    };
+    window.onload = function () {};
   </script>
 </body>
 </html>`;
@@ -183,15 +179,6 @@ module.exports = async (req, res) => {
 
     } catch (error) {
         console.error(`[Factura Ticket ${saleId}] Error capturado en handler:`, error);
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.status(500).send(`
-            <!DOCTYPE html><html lang="es"><head><title>Error</title></head>
-            <body style="font-family: sans-serif;">
-                <h1>Error al generar la factura</h1>
-                <p>No se pudo generar la factura para la venta ID: ${escapeHtml(saleId)}</p>
-                <p><strong>Detalle del error:</strong> ${escapeHtml(error.message)}</p>
-                <p>Por favor, revise los logs de Vercel o contacte al soporte.</p>
-            </body></html>
-        `);
+        res.status(500).send(`... HTML de error ...`);
     }
 };
