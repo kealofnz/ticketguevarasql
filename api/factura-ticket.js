@@ -168,9 +168,17 @@ module.exports = async (req, res) => {
     </div>
   </div>
 
-  <script>
-    window.onload = function () {};
-  </script>
+<script>
+  window.onload = function () {
+    try {
+      console.log('[Factura Ticket] Iniciando impresión automática...');
+      window.print();
+    } catch (e) {
+      console.error("[Factura Ticket] Error al imprimir automáticamente:", e);
+    }
+  };
+</script>
+
 </body>
 </html>`;
 
